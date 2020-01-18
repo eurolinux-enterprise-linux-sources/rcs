@@ -1,17 +1,19 @@
 Summary: Revision Control System (RCS) file version management tools
 Name: rcs
 Version: 5.9.0
-Release: 1%{?dist}
+Release: 5%{?dist}
 License: GPLv3+
 Group: Development/Tools
 URL: http://www.gnu.org/software/rcs/
 Source: ftp://ftp.gnu.org/gnu/rcs/%{name}-%{version}.tar.xz
 Patch0: rcs-5.8-build-tweaks.patch
+Patch1: rcs-5.9-coperf.patch
 Provides: bundled(gnulib)
 BuildRequires: autoconf
 BuildRequires: groff
 BuildRequires: ghostscript
 BuildRequires: ed
+BuildRequires: texinfo
 Requires: diffutils
 Requires(post): /sbin/install-info
 Requires(postun): /sbin/install-info
@@ -29,6 +31,7 @@ different versions of files.
 %prep
 %setup -q
 %patch0 -p1 -b .build-tweaks
+%patch1 -p1 -b .coperf
 autoconf
 
 %build
@@ -61,6 +64,16 @@ fi
 %{_infodir}/*
 
 %changelog
+* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 5.9.0-5
+- Mass rebuild 2014-01-24
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 5.9.0-4
+- Mass rebuild 2013-12-27
+
+* Tue Dec  3 2013 Honza Horak <hhorak@redhat.com> - 5.9.0-3
+- Fix performance issues
+  Resolves: #1036527
+
 * Fri May 10 2013 Honza Horak <hhorak@redhat.com> - 5.9.0-1
 - Update to upstream 5.9.0
 
@@ -98,7 +111,7 @@ fi
 * Wed Feb 09 2011 Fedora Release Engineering <rel-eng@lists.fedoraproject.org> - 5.7-37
 - Rebuilt for https://fedoraproject.org/wiki/Fedora_15_Mass_Rebuild
 
-* Tue Jan 11 2010 Ville Skyttä <ville.skytta at iki.fi> - 5.7-36
+* Mon Jan 11 2010 Ville Skyttä <ville.skytta at iki.fi> - 5.7-36
 - Add dependency on diffutils.
 - Apply build tweaks patch from Debian (incl installing rcsfreeze).
 - BuildRequire autoconf instead of automake.
@@ -201,7 +214,7 @@ fi
 * Tue May 05 1998 Prospector System <bugs@redhat.com>
 - translations modified for de, fr, tr
 
-* Wed Oct 21 1997 Cristian Gafton <gafton@redhat.com>
+* Tue Oct 21 1997 Cristian Gafton <gafton@redhat.com>
 - fixed the spec file; added BuildRoot
 
 * Fri Jul 18 1997 Erik Troan <ewt@redhat.com>

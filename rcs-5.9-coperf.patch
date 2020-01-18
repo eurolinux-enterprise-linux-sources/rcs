@@ -1,0 +1,177 @@
+There seems to be a performance regression in 5.8+ versions of RCS.
+
+RCS consults env var ‘RCS_MEM_LIMIT’ to determine whether or not to fall
+back to (slow) stdio mode (which uses temporary files) from the default
+in-memory (mmap et al) mode. The default value is "256" (kilobytes), which
+is probably too low these days on most workstations. 
+
+RHBZ#1036527
+Upstream: https://savannah.gnu.org/bugs/index.php?40200
+
+diff -U0 rcs-5.9.0/ChangeLog.coperf rcs-5.9.0/ChangeLog
+--- rcs-5.9.0/ChangeLog.coperf	2013-12-03 13:33:59.544075057 +0100
++++ rcs-5.9.0/ChangeLog	2013-12-03 13:38:42.814534824 +0100
+@@ -0,0 +1,7 @@
++2013-10-20  Thien-Thi Nguyen  <ttn@gnu.org>
++
++	Relax RCS_MEM_LIMIT default; fall back if unspecified.
++
++	* doc/rcs.texi (Environment): Update ‘RCS_MEM_LIMIT’ description;
++	add a willful ignorance hint and speculation on its removal.
++
+diff -up rcs-5.9.0/doc/rcs.texi.coperf rcs-5.9.0/doc/rcs.texi
+--- rcs-5.9.0/doc/rcs.texi.coperf	2013-05-06 10:29:41.000000000 +0200
++++ rcs-5.9.0/doc/rcs.texi	2013-12-03 13:33:59.545075058 +0100
+@@ -1002,12 +1002,20 @@ the rest of the command-line.  The effec
+ @cindex memory limit
+ Normally, for speed, commands either memory map or copy into memory
+ the @repo{} if its size is less than the @dfn{memory limit}, currently
+-defaulting to 256 kilobytes.  Otherwise the commands fall back to using
++defaulting to ``unlimited''.
++Otherwise (or if the initially-tried speedy ways fail),
++the commands fall back to using
+ standard i/o routines.
+ 
+ You can adjust the memory limit by setting the @samp{RCS_MEM_LIMIT}
+ environment variable to a numeric value (measured in kilobytes).
+ An empty value is silently ignored.
++
++As a side effect, specifying the memory limit inhibits
++fall-back to slower routines.
++(This env var is mostly intended for testing RCS;
++normally, you can leave it unset.  Probably it will be
++removed in a future release.)
+ @end defvr
+ 
+ @defvr {Environment Variable} TMPDIR
+diff -up rcs-5.9.0/src/base.h.coperf rcs-5.9.0/src/base.h
+--- rcs-5.9.0/src/base.h.coperf	2013-05-03 10:25:05.000000000 +0200
++++ rcs-5.9.0/src/base.h	2013-12-03 13:33:59.548075060 +0100
+@@ -522,6 +522,7 @@ struct behavior
+      (if mmap(2)), or operate on a copy of it in core (if no mmap(2)).
+      Otherwise, use standard i/o routines as the fallback.
+      Set by env var ‘RCS_MEM_LIMIT’.
++     See also ‘MEMORY_UNLIMITED’.
+      -- gnurcs_init  */
+ 
+   struct sff *sff;
+@@ -861,6 +862,8 @@ int getRCSINIT (int argc, char **argv, c
+ 
+ /* Idioms.  */
+ 
++#define MEMORY_UNLIMITED  -1
++
+ #define BOG_DIFF   (TYAG_TEMPUNLINK | TYAG_DIFF)
+ #define BOG_ZONK   (TYAG_DIRTMPUNLINK | TYAG_TEMPUNLINK)
+ #define BOG_FULL   (TYAG_ORCSERROR | BOG_ZONK)
+diff -up rcs-5.9.0/src/b-fro.c.coperf rcs-5.9.0/src/b-fro.c
+--- rcs-5.9.0/src/b-fro.c.coperf	2013-04-30 17:52:07.000000000 +0200
++++ rcs-5.9.0/src/b-fro.c	2013-12-03 13:37:07.237305286 +0100
+@@ -61,6 +61,7 @@ fro_open (char const *name, char const *
+                            | (strchr (type, 'b') ? OPEN_O_BINARY : 0)
+ #endif
+                            ));
++  bool unlimited = MEMORY_UNLIMITED == BE (mem_limit);
+ 
+   if (PROB (fd))
+     return NULL;
+@@ -81,12 +82,25 @@ fro_open (char const *name, char const *
+   f->end = s;
+ 
+   /* Determine the read method.  */
+-  f->rm = status->st_size < 1024 * BE (mem_limit)
++  f->rm = (unlimited
++           || status->st_size < 1024 * BE (mem_limit))
+     ? (MMAP_SIGNAL && status->st_size
+        ? RM_MMAP
+        : RM_MEM)
+     : RM_STDIO;
+ 
++#define STUBBORNLY_RETRY_MAYBE(METHOD)  do      \
++    {                                           \
++      if (unlimited)                            \
++        {                                       \
++          f->rm = METHOD;                       \
++          goto retry;                           \
++        }                                       \
++      fatal_sys (name);                         \
++    }                                           \
++  while (0)
++
++ retry:
+   switch (f->rm)
+     {
+     case RM_MMAP:
+@@ -98,7 +112,7 @@ fro_open (char const *name, char const *
+       ISR_DO (CATCHMMAPINTS);
+       f->base = mmap (NULL, s, PROT_READ, MAP_SHARED, fd, 0);
+       if (f->base == MAP_FAILED)
+-        fatal_sys (name);
++        STUBBORNLY_RETRY_MAYBE (RM_MEM);
+       /* On many hosts, the superuser can mmap an NFS file
+          it can't read.  So access the first page now, and
+          print a nice message if a bus error occurs.  */
+@@ -131,7 +145,7 @@ fro_open (char const *name, char const *
+           do
+             {
+               if (PROB (r = read (fd, bufptr, bufsiz)))
+-                fatal_sys (name);
++                STUBBORNLY_RETRY_MAYBE (RM_STDIO);
+ 
+               if (!r)
+                 {
+@@ -147,7 +161,7 @@ fro_open (char const *name, char const *
+             }
+           while (bufsiz);
+           if (PROB (lseek (fd, 0, SEEK_SET)))
+-            fatal_sys (name);
++            STUBBORNLY_RETRY_MAYBE (RM_STDIO);
+         }
+       f->ptr = f->base;
+       f->lim = f->base + s;
+@@ -162,6 +176,8 @@ fro_open (char const *name, char const *
+ 
+   f->fd = fd;
+   return f;
++
++#undef STUBBORNLY_RETRY_MAYBE
+ }
+ 
+ void
+diff -U0 rcs-5.9.0/src/ChangeLog.coperf rcs-5.9.0/src/ChangeLog
+--- rcs-5.9.0/src/ChangeLog.coperf	2013-12-03 13:33:59.547075059 +0100
++++ rcs-5.9.0/src/ChangeLog	2013-12-03 13:38:52.305555851 +0100
+@@ -0,0 +1,12 @@
++2013-10-20  Thien-Thi Nguyen  <ttn@gnu.org>
++
++	Relax RCS_MEM_LIMIT default; fall back if unspecified.
++
++	* base.h (MEMORY_UNLIMITED): New #define.	
++	* rcsutil.c (gnurcs_init): If unspecified,
++	default ‘BE (mem_limit)’ to ‘MEMORY_UNLIMITED’.
++	* b-fro.c (fro_open): Notice ‘MEMORY_UNLIMITED’ mem limit;
++	in that case, don't check file size, and on ‘RM_MMAP’ or
++	‘RM_MEM’ failure, retry w/ the "next" method: ‘RM_MEM’ or
++	‘RM_STDIO’, respectively.
++
+diff -up rcs-5.9.0/src/rcsutil.c.coperf rcs-5.9.0/src/rcsutil.c
+--- rcs-5.9.0/src/rcsutil.c.coperf	2013-05-03 13:52:56.000000000 +0200
++++ rcs-5.9.0/src/rcsutil.c	2013-12-03 13:33:59.548075060 +0100
+@@ -103,7 +103,7 @@ gnurcs_init (struct program const *progr
+          ? 0
+          : lim)
+       /* Default value.  */
+-      : 256;
++      : MEMORY_UNLIMITED;
+   }
+ }
+ 
+diff -up rcs-5.9.0/THANKS.coperf rcs-5.9.0/THANKS
+--- rcs-5.9.0/THANKS.coperf	2013-12-03 13:33:59.544075057 +0100
++++ rcs-5.9.0/THANKS	2013-12-03 13:34:57.565111763 +0100
+@@ -47,4 +47,5 @@ and reporting bugs (sometimes with fixes
+   Jiri Moskovcak
+   James Olin Oden
+   Derek McEachern
++  Andrew J. Schorr
+   (and others who prefer anonymity)
